@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  database:
+    image: postgres:15  # use official Postgres image
+    env_file: ./database/.env  # load environment variables from .env file
+    environment:
+      POSTGRES_USER: postgres  # superuser
+      POSTGRES_DB: inforobot   # predefined database
+      POSTGRES_HOST_AUTH_METHOD: trust  # using trust authentication for simplicity
+    volumes:
+      - ./database/data:/var/lib/postgresql/data  # permanent data storage
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql  # initial SQL script
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d inforobot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"  # use host port 5432 for Postgres
+
+  
+  gateway:
+    build: 
+      context: ./gateway     
+      dockerfile: Dockerfile
+      target: dev  # use the development stage
+    container_name: gateway
+    env_file:
+      - ./database/.env
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: inforobot
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+    depends_on:
+      database:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+  
+
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+    - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+
+  celery_worker:
+    build: ./gateway
+    container_name: celery_worker
+    command: celery -A celery_app.celery worker --loglevel=info
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=inforobot
+      - POSTGRES_HOST=database
+      - POSTGRES_PORT=5432
+      - PYTHONPATH=/app  # set module path
+    volumes:
+      - ./gateway:/app  # load the gateway code into the container
+    depends_on:
+      - redis
+      - database
+
+  celery-beat:
+    build:
+      context: ./gateway
+    container_name: celery-beat
+    command: celery -A celery_app.celery beat --loglevel=info
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=inforobot
+      - POSTGRES_HOST=database
+      - POSTGRES_PORT=5432
+      - PYTHONPATH=/app  # set module path
+    depends_on:
+      - gateway
+      - redis
